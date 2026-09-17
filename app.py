@@ -1,11 +1,18 @@
 """
 Funding Landscape Explorer - MVP backend.
 
-This is the "librarian": it holds one persistent DuckDB connection, loads a
-trimmed, indexed copy of the real QWNTL Open Grant Data on startup (funders,
-recipients, and the funder-to-recipient relationship edges), and answers a
-small, fixed set of questions over HTTP. It never invents a relationship: every
-edge it returns traces to a row in QWNTL's graph_edges table.
+This is the "librarian": it holds one persistent DuckDB connection over a
+trimmed, indexed copy of the real QWNTL Open Grant Data (funders, recipients,
+and the funder-to-recipient relationship edges), and answers a small, fixed
+set of questions over HTTP. It never invents a relationship: every edge it
+returns traces to a row in QWNTL's graph_edges table.
+
+The database itself (explorer.duckdb) is built once at Docker image build
+time by build_data.py, not here, and not at container startup. This file
+only opens it. See build_data.py for why: fetching 2.8GB of real data live,
+on every boot, over an unreliable/blocked-in-testing network path, was the
+wrong place to put that risk, especially on a free host whose container
+sleeps and wakes repeatedly.
 
 Deliberately out of scope for this MVP (see the v0.3/v0.4 discussion this
 came out of): full-text semantic search over embeddings, grant opportunities,
@@ -14,7 +21,6 @@ later additions on top of this same data layer, not blockers to it.
 """
 
 import logging
-import time
 from pathlib import Path
 
 import duckdb
@@ -23,27 +29,6 @@ from fastapi.responses import FileResponse
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("funding-explorer")
-
-# The real, published QWNTL parquet files (CC0). Column names below were
-# confirmed against the Hugging Face dataset-server schema for this dataset,
-# not guessed. DuckDB's httpfs does not resolve a "*" wildcard against
-# Hugging Face's ref-based resolve URLs (it 404s trying to list the
-# directory), so each file is listed explicitly instead of globbed.
-BASE = "https://huggingface.co/datasets/qwntl-labs/open-grant-data/resolve/refs%2Fconvert%2Fparquet"
-
-
-def _files(config: str, n: int) -> list[str]:
-    return [f"{BASE}/{config}/train/{i:04d}.parquet" for i in range(n)]
-
-
-FUNDERS_FILES = _files("funders", 8)
-RECIPIENTS_FILES = _files("recipients", 4)
-EDGES_FILES = _files("graph_edges", 16)
-
-
-def _sql_list(urls: list[str]) -> str:
-    """Render a Python list of URLs as a DuckDB SQL array literal."""
-    return "[" + ", ".join(f"'{u}'" for u in urls) + "]"
 
 DB_PATH = Path(__file__).parent / "explorer.duckdb"
 
@@ -54,83 +39,21 @@ _con: duckdb.DuckDBPyConnection | None = None
 
 def get_con() -> duckdb.DuckDBPyConnection:
     if _con is None:
-        raise HTTPException(503, "Data is still loading, try again in a few seconds.")
+        raise HTTPException(503, "Data is not available. The build may not have completed.")
     return _con
-
-
-def build_database() -> duckdb.DuckDBPyConnection:
-    """
-    One-time ETL: pull only the columns this app actually needs (never the
-    1024-dim embeddings, which would balloon memory for no benefit here) from
-    the real remote parquet into a small local DuckDB file, then index it.
-    This runs once at container startup. Everything after that is a fast
-    local, indexed lookup, not a remote re-scan.
-    """
-    log.info("Loading real QWNTL data from Hugging Face, this happens once...")
-    t0 = time.time()
-
-    con = duckdb.connect(str(DB_PATH))
-    con.execute("INSTALL httpfs; LOAD httpfs;")
-
-    con.execute(f"""
-        CREATE OR REPLACE TABLE funders AS
-        SELECT
-            id AS funder_id,
-            ein,
-            organization_name,
-            funder_type,
-            city,
-            state_code,
-            grant_size_minimum,
-            grant_size_maximum
-        FROM read_parquet({_sql_list(FUNDERS_FILES)})
-    """)
-
-    con.execute(f"""
-        CREATE OR REPLACE TABLE recipients AS
-        SELECT
-            recipient_id,
-            name,
-            ein,
-            state,
-            ntee_code,
-            mission
-        FROM read_parquet({_sql_list(RECIPIENTS_FILES)})
-    """)
-
-    con.execute(f"""
-        CREATE OR REPLACE TABLE edges AS
-        SELECT
-            funder_id,
-            recipient_id,
-            TRY_CAST(year AS INTEGER) AS year,
-            amount
-        FROM read_parquet({_sql_list(EDGES_FILES)})
-    """)
-
-    log.info("Building indexes...")
-    con.execute("CREATE INDEX idx_edges_funder ON edges(funder_id)")
-    con.execute("CREATE INDEX idx_edges_recipient ON edges(recipient_id)")
-    con.execute("CREATE INDEX idx_funders_id ON funders(funder_id)")
-    con.execute("CREATE INDEX idx_recipients_id ON recipients(recipient_id)")
-
-    counts = con.execute("""
-        SELECT
-            (SELECT count(*) FROM funders),
-            (SELECT count(*) FROM recipients),
-            (SELECT count(*) FROM edges)
-    """).fetchone()
-    log.info(
-        "Loaded %s funders, %s recipients, %s edges in %.1fs",
-        *counts, time.time() - t0,
-    )
-    return con
 
 
 @app.on_event("startup")
 def startup():
     global _con
-    _con = build_database()
+    if not DB_PATH.exists():
+        log.error("explorer.duckdb not found at %s. Was build_data.py run during the image build?", DB_PATH)
+        return
+    _con = duckdb.connect(str(DB_PATH), read_only=True)
+    counts = _con.execute(
+        "SELECT (SELECT count(*) FROM funders), (SELECT count(*) FROM recipients), (SELECT count(*) FROM edges)"
+    ).fetchone()
+    log.info("Opened pre-built database: %s funders, %s recipients, %s edges", *counts)
 
 
 # ---- API ---------------------------------------------------------------
