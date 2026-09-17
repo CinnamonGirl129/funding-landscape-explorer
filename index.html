@@ -163,6 +163,9 @@
   @media (max-width: 700px) {
     #topbar { flex-direction: column; }
     #searchwrap { width: 100%; }
+    /* iOS Safari/Chrome auto-zoom the page on focusing an input smaller
+       than 16px; keep it at 16px on small screens to avoid that jolt. */
+    #search { font-size: 16px; }
   }
 </style>
 </head>
@@ -400,14 +403,30 @@ async function runSearch(q) {
   `).join("");
 }
 
+// Mobile fix: tapping a result blurs the search input (closing the keyboard)
+// a beat before the browser fires "click", so the tap can land on nothing.
+// Prevent that default blur on press-down, then handle the actual selection
+// on click as before. This is the standard fix for tap-to-select dropdowns.
+resultsBox.addEventListener("mousedown", (ev) => ev.preventDefault());
+resultsBox.addEventListener("touchstart", (ev) => {
+  const row = ev.target.closest(".result");
+  if (!row) return;
+  ev.preventDefault();
+  selectResult(row);
+}, { passive: false });
 resultsBox.addEventListener("click", (ev) => {
   const row = ev.target.closest(".result");
   if (!row) return;
+  selectResult(row);
+});
+
+function selectResult(row) {
   const id = row.dataset.id, kind = row.dataset.kind;
   resultsBox.innerHTML = "";
   searchInput.value = "";
+  searchInput.blur();
   if (kind === "recipient") expandRecipient(id); else expandFunder(id);
-});
+}
 </script>
 </body>
 </html>
