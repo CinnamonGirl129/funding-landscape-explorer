@@ -26,11 +26,24 @@ log = logging.getLogger("funding-explorer")
 
 # The real, published QWNTL parquet files (CC0). Column names below were
 # confirmed against the Hugging Face dataset-server schema for this dataset,
-# not guessed.
+# not guessed. DuckDB's httpfs does not resolve a "*" wildcard against
+# Hugging Face's ref-based resolve URLs (it 404s trying to list the
+# directory), so each file is listed explicitly instead of globbed.
 BASE = "https://huggingface.co/datasets/qwntl-labs/open-grant-data/resolve/refs%2Fconvert%2Fparquet"
-FUNDERS_GLOB = f"{BASE}/funders/train/*.parquet"
-RECIPIENTS_GLOB = f"{BASE}/recipients/train/*.parquet"
-EDGES_GLOB = f"{BASE}/graph_edges/train/*.parquet"
+
+
+def _files(config: str, n: int) -> list[str]:
+    return [f"{BASE}/{config}/train/{i:04d}.parquet" for i in range(n)]
+
+
+FUNDERS_FILES = _files("funders", 8)
+RECIPIENTS_FILES = _files("recipients", 4)
+EDGES_FILES = _files("graph_edges", 16)
+
+
+def _sql_list(urls: list[str]) -> str:
+    """Render a Python list of URLs as a DuckDB SQL array literal."""
+    return "[" + ", ".join(f"'{u}'" for u in urls) + "]"
 
 DB_PATH = Path(__file__).parent / "explorer.duckdb"
 
@@ -70,7 +83,7 @@ def build_database() -> duckdb.DuckDBPyConnection:
             state_code,
             grant_size_minimum,
             grant_size_maximum
-        FROM read_parquet('{FUNDERS_GLOB}')
+        FROM read_parquet({_sql_list(FUNDERS_FILES)})
     """)
 
     con.execute(f"""
@@ -82,7 +95,7 @@ def build_database() -> duckdb.DuckDBPyConnection:
             state,
             ntee_code,
             mission
-        FROM read_parquet('{RECIPIENTS_GLOB}')
+        FROM read_parquet({_sql_list(RECIPIENTS_FILES)})
     """)
 
     con.execute(f"""
@@ -92,7 +105,7 @@ def build_database() -> duckdb.DuckDBPyConnection:
             recipient_id,
             TRY_CAST(year AS INTEGER) AS year,
             amount
-        FROM read_parquet('{EDGES_GLOB}')
+        FROM read_parquet({_sql_list(EDGES_FILES)})
     """)
 
     log.info("Building indexes...")
