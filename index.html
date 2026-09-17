@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Funding Landscape Explorer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<style>
+  :root {
+    --bg: #0a0d10;
+    --panel: #11161b;
+    --panel-border: #202932;
+    --funder: #3ecfc0;
+    --funder-dim: #1f4f4a;
+    --recipient: #b39ddb;
+    --recipient-dim: #4a3f5c;
+    --gold: #d9b34a;
+    --gold-dim: #4a3f22;
+    --text: #e8e6df;
+    --muted: #7c8994;
+    --danger: #d97a5f;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: 'IBM Plex Sans', sans-serif;
+    overflow: hidden;
+  }
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+
+  #canvas-wrap { position: absolute; inset: 0; }
+  svg#graph { width: 100%; height: 100%; display: block; cursor: grab; }
+  svg#graph:active { cursor: grabbing; }
+
+  .edge { stroke: var(--gold); stroke-opacity: 0.35; }
+  .edge.dim { stroke-opacity: 0.06; }
+  .edge.lit { stroke-opacity: 0.9; stroke-width: 2px; }
+
+  .node circle { stroke: rgba(0,0,0,0.4); stroke-width: 1px; cursor: pointer; }
+  .node.funder circle { fill: var(--funder); }
+  .node.recipient circle { fill: var(--recipient); }
+  .node.dim circle { opacity: 0.18; }
+  .node text {
+    fill: var(--text); font-family: 'IBM Plex Mono', monospace;
+    font-size: 10.5px; pointer-events: none; opacity: 0.85;
+  }
+  .node.dim text { opacity: 0.12; }
+
+  /* Top bar */
+  #topbar {
+    position: absolute; top: 16px; left: 16px; right: 16px;
+    display: flex; align-items: flex-start; gap: 14px;
+    pointer-events: none;
+  }
+  #brand {
+    pointer-events: auto;
+    background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 8px; padding: 10px 16px;
+  }
+  #brand h1 {
+    margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.02em;
+  }
+  #brand .sub { margin-top: 2px; font-size: 11px; color: var(--muted); }
+
+  #searchwrap { position: relative; pointer-events: auto; width: min(420px, 46vw); }
+  #search {
+    width: 100%; background: var(--panel); border: 1px solid var(--panel-border);
+    color: var(--text); border-radius: 8px; padding: 12px 14px;
+    font-family: 'IBM Plex Mono', monospace; font-size: 13px; outline: none;
+  }
+  #search:focus { border-color: var(--gold); }
+  #search::placeholder { color: var(--muted); }
+  #results {
+    position: absolute; top: calc(100% + 6px); left: 0; right: 0;
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px;
+    max-height: 320px; overflow-y: auto; z-index: 20;
+  }
+  #results:empty { display: none; }
+  .result {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--panel-border);
+    font-size: 13px;
+  }
+  .result:last-child { border-bottom: none; }
+  .result:hover { background: rgba(255,255,255,0.04); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .dot.funder { background: var(--funder); }
+  .dot.recipient { background: var(--recipient); }
+  .result .name { flex: 1; }
+  .result .state { color: var(--muted); font-family: 'IBM Plex Mono', monospace; font-size: 11px; }
+
+  #legend {
+    position: absolute; bottom: 16px; left: 16px;
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px;
+    padding: 10px 14px; font-size: 11px; color: var(--muted);
+    display: flex; gap: 16px; align-items: center;
+  }
+  #legend .item { display: flex; align-items: center; gap: 6px; }
+
+  #status {
+    position: absolute; bottom: 16px; right: 16px;
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px;
+    padding: 10px 14px; font-size: 11px; color: var(--muted);
+    font-family: 'IBM Plex Mono', monospace; max-width: 280px; text-align: right;
+  }
+  #status.error { color: var(--danger); border-color: var(--danger); }
+
+  /* Evidence panel */
+  #evidence {
+    position: absolute; top: 0; right: 0; height: 100%;
+    width: min(380px, 92vw);
+    background: var(--panel); border-left: 1px solid var(--panel-border);
+    transform: translateX(100%); transition: transform 0.2s ease;
+    padding: 20px; overflow-y: auto; z-index: 30;
+  }
+  #evidence.open { transform: translateX(0); }
+  #evidence .close {
+    position: absolute; top: 14px; right: 16px; cursor: pointer;
+    color: var(--muted); font-size: 18px; background: none; border: none;
+  }
+  #evidence h2 { font-size: 15px; margin: 0 0 2px; padding-right: 24px; }
+  #evidence .kind {
+    display: inline-block; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+    padding: 2px 8px; border-radius: 4px; margin-bottom: 12px;
+  }
+  #evidence .kind.funder { background: var(--funder-dim); color: var(--funder); }
+  #evidence .kind.recipient { background: var(--recipient-dim); color: var(--recipient); }
+  #evidence .field { margin-bottom: 10px; }
+  #evidence .field label {
+    display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--muted); margin-bottom: 2px;
+  }
+  #evidence .field .val { font-size: 13px; }
+  #evidence table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12px; }
+  #evidence th {
+    text-align: left; color: var(--muted); font-weight: 500; font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.04em; padding: 4px 6px;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  #evidence td { padding: 5px 6px; border-bottom: 1px solid rgba(255,255,255,0.04); font-family: 'IBM Plex Mono', monospace; }
+  #evidence .provenance {
+    margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--panel-border);
+    font-size: 10.5px; color: var(--muted); line-height: 1.5;
+  }
+  #evidence button.expand {
+    margin-top: 14px; width: 100%; background: var(--gold-dim); color: var(--gold);
+    border: 1px solid var(--gold); border-radius: 6px; padding: 9px; font-size: 12px;
+    cursor: pointer; font-family: 'IBM Plex Sans', sans-serif; font-weight: 600;
+  }
+  #evidence button.expand:hover { background: var(--gold); color: #1a1508; }
+
+  #empty-hint {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    text-align: center; color: var(--muted); pointer-events: none;
+  }
+  #empty-hint .big { font-size: 14px; color: var(--text); margin-bottom: 6px; }
+  #empty-hint .small { font-size: 12px; }
+
+  @media (max-width: 700px) {
+    #topbar { flex-direction: column; }
+    #searchwrap { width: 100%; }
+  }
+</style>
+</head>
+<body>
+
+<div id="canvas-wrap">
+  <svg id="graph"></svg>
+  <div id="empty-hint">
+    <div class="big">Search a nonprofit or funder to enter the graph</div>
+    <div class="small">Every dot and line here is a real record from QWNTL's Open Grant Data. Nothing is illustrative.</div>
+  </div>
+</div>
+
+<div id="topbar">
+  <div id="brand">
+    <h1>Funding Landscape Explorer</h1>
+    <div class="sub">v0.4 &middot; real QWNTL data &middot; one neighborhood at a time</div>
+  </div>
+  <div id="searchwrap">
+    <input id="search" class="mono" type="text" placeholder="Search a nonprofit or funder (e.g. Zenger Farm)" autocomplete="off" />
+    <div id="results"></div>
+  </div>
+</div>
+
+<div id="legend">
+  <div class="item"><span class="dot funder"></span> Funder</div>
+  <div class="item"><span class="dot recipient"></span> Recipient</div>
+  <div class="item">— gold line = documented funding relationship</div>
+</div>
+
+<div id="status" class="mono">connecting…</div>
+
+<div id="evidence">
+  <button class="close" onclick="closeEvidence()">&times;</button>
+  <div id="evidence-body"></div>
+</div>
+
+<script>
+const API = ""; // same origin
+
+// ---- graph state (accumulates; never replaced) ----
+const nodes = new Map();   // id -> {id, kind, name, ...}
+const links = [];          // {source, target, grant_count, total_amount, first_year, last_year}
+const linkKey = (a, b) => [a, b].sort().join("::");
+const seenLinks = new Set();
+
+const svg = d3.select("#graph");
+let width = window.innerWidth, height = window.innerHeight;
+svg.attr("viewBox", [0, 0, width, height]);
+
+const g = svg.append("g");
+svg.call(d3.zoom().scaleExtent([0.15, 4]).on("zoom", (ev) => g.attr("transform", ev.transform)));
+
+const linkLayer = g.append("g").attr("class", "links");
+const nodeLayer = g.append("g").attr("class", "nodes");
+
+const sim = d3.forceSimulation()
+  .force("charge", d3.forceManyBody().strength(-260))
+  .force("link", d3.forceLink().id(d => d.id).distance(90).strength(0.5))
+  .force("center", d3.forceCenter(width / 2, height / 2))
+  .force("collide", d3.forceCollide(26));
+
+window.addEventListener("resize", () => {
+  width = window.innerWidth; height = window.innerHeight;
+  svg.attr("viewBox", [0, 0, width, height]);
+  sim.force("center", d3.forceCenter(width / 2, height / 2));
+});
+
+function setStatus(text, isError) {
+  const el = document.getElementById("status");
+  el.textContent = text;
+  el.classList.toggle("error", !!isError);
+}
+
+fetch(`${API}/api/status`).then(r => {
+  if (!r.ok) throw new Error("bad status");
+  return r.json();
+}).then(s => {
+  setStatus(`${s.funders.toLocaleString()} funders · ${s.recipients.toLocaleString()} recipients · ${s.edges.toLocaleString()} documented relationships loaded`);
+}).catch(() => setStatus("could not reach the data service", true));
+
+// ---- rendering ----
+function render() {
+  const nodeArr = Array.from(nodes.values());
+
+  const linkSel = linkLayer.selectAll("line").data(links, d => d.key);
+  linkSel.exit().remove();
+  linkSel.enter().append("line")
+    .attr("class", "edge")
+    .attr("stroke-width", d => Math.min(1 + Math.log10(1 + d.total_amount) * 0.6, 5))
+    .merge(linkSel);
+
+  const nodeSel = nodeLayer.selectAll("g.node").data(nodeArr, d => d.id);
+  nodeSel.exit().remove();
+  const nodeEnter = nodeSel.enter().append("g")
+    .attr("class", d => `node ${d.kind}`)
+    .call(drag(sim))
+    .on("click", (ev, d) => selectNode(d));
+
+  nodeEnter.append("circle").attr("r", d => d.kind === "recipient" ? 9 : 7);
+  nodeEnter.append("text").attr("x", 12).attr("y", 4).text(d => truncate(d.name, 26));
+
+  nodeSel.merge(nodeEnter).select("circle").attr("r", d => d.kind === "recipient" ? 9 : 7);
+
+  sim.nodes(nodeArr).on("tick", ticked);
+  sim.force("link").links(links);
+  sim.alpha(0.8).restart();
+
+  function ticked() {
+    linkLayer.selectAll("line")
+      .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+      .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+    nodeLayer.selectAll("g.node")
+      .attr("transform", d => `translate(${d.x},${d.y})`);
+  }
+}
+
+function truncate(s, n) { return s && s.length > n ? s.slice(0, n - 1) + "…" : (s || ""); }
+
+function drag(simulation) {
+  function started(ev, d) {
+    if (!ev.active) simulation.alphaTarget(0.25).restart();
+    d.fx = d.x; d.fy = d.y;
+  }
+  function dragged(ev, d) { d.fx = ev.x; d.fy = ev.y; }
+  function ended(ev, d) {
+    if (!ev.active) simulation.alphaTarget(0);
+    d.fx = null; d.fy = null;
+  }
+  return d3.drag().on("start", started).on("drag", dragged).on("end", ended);
+}
+
+// ---- data loading ----
+function addNode(id, kind, name, extra) {
+  document.getElementById("empty-hint").style.display = "none";
+  if (!nodes.has(id)) {
+    nodes.set(id, Object.assign({ id, kind, name, x: width/2 + (Math.random()-0.5)*40, y: height/2 + (Math.random()-0.5)*40 }, extra || {}));
+  }
+  return nodes.get(id);
+}
+
+function addLink(a, b, meta) {
+  const key = linkKey(a, b);
+  if (seenLinks.has(key)) return;
+  seenLinks.add(key);
+  links.push(Object.assign({ key, source: a, target: b }, meta));
+}
+
+async function expandRecipient(id) {
+  setStatus("looking up documented funders…");
+  const res = await fetch(`${API}/api/recipient/${encodeURIComponent(id)}/funders`);
+  if (!res.ok) { setStatus("no data for that recipient", true); return; }
+  const data = await res.json();
+  addNode(data.recipient.id, "recipient", data.recipient.name, data.recipient);
+  data.funders.forEach(f => {
+    addNode(f.funder_id, "funder", f.name, f);
+    addLink(data.recipient.id, f.funder_id, f);
+  });
+  render();
+  setStatus(`${data.funders.length} documented funders loaded for ${data.recipient.name}`);
+}
+
+async function expandFunder(id) {
+  setStatus("looking up documented recipients…");
+  const res = await fetch(`${API}/api/funder/${encodeURIComponent(id)}/recipients`);
+  if (!res.ok) { setStatus("no data for that funder", true); return; }
+  const data = await res.json();
+  addNode(data.funder.id, "funder", data.funder.name, data.funder);
+  data.recipients.forEach(r => {
+    addNode(r.recipient_id, "recipient", r.name, r);
+    addLink(data.funder.id, r.recipient_id, r);
+  });
+  render();
+  setStatus(`${data.recipients.length} documented recipients loaded for ${data.funder.name}`);
+}
+
+function selectNode(d) {
+  const body = document.getElementById("evidence-body");
+  const kindLabel = d.kind === "funder" ? "Funder" : "Recipient";
+  let html = `<h2>${escapeHtml(d.name || "Unnamed")}</h2>
+    <span class="kind ${d.kind}">${kindLabel}</span>`;
+
+  if (d.kind === "recipient") {
+    html += field("State", d.state);
+    html += field("NTEE code", d.ntee_code);
+    if (d.mission) html += field("Mission", d.mission);
+  } else {
+    html += field("Type", d.funder_type);
+    html += field("Location", [d.city, d.state].filter(Boolean).join(", "));
+  }
+
+  html += `<button class="expand" onclick="${d.kind === 'recipient' ? 'expandRecipient' : 'expandFunder'}('${d.id}')">
+    Expand ${d.kind === 'recipient' ? 'its funders' : 'its recipient ecosystem'}
+  </button>`;
+
+  html += `<div class="provenance">Source: QWNTL Labs Open Grant Data (CC0), the open successor to GrantX. Record id: ${d.id}</div>`;
+
+  body.innerHTML = html;
+  document.getElementById("evidence").classList.add("open");
+}
+
+function field(label, val) {
+  if (!val) return "";
+  return `<div class="field"><label>${label}</label><div class="val">${escapeHtml(String(val))}</div></div>`;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+}
+
+function closeEvidence() { document.getElementById("evidence").classList.remove("open"); }
+
+// ---- search ----
+const searchInput = document.getElementById("search");
+const resultsBox = document.getElementById("results");
+let searchTimer;
+
+searchInput.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  const q = searchInput.value.trim();
+  if (q.length < 2) { resultsBox.innerHTML = ""; return; }
+  searchTimer = setTimeout(() => runSearch(q), 250);
+});
+
+async function runSearch(q) {
+  const res = await fetch(`${API}/api/search?q=${encodeURIComponent(q)}`);
+  if (!res.ok) return;
+  const data = await res.json();
+  resultsBox.innerHTML = data.results.map(r => `
+    <div class="result" data-id="${r.id}" data-kind="${r.kind}">
+      <span class="dot ${r.kind}"></span>
+      <span class="name">${escapeHtml(r.name)}</span>
+      <span class="state">${r.state || ""}</span>
+    </div>
+  `).join("");
+}
+
+resultsBox.addEventListener("click", (ev) => {
+  const row = ev.target.closest(".result");
+  if (!row) return;
+  const id = row.dataset.id, kind = row.dataset.kind;
+  resultsBox.innerHTML = "";
+  searchInput.value = "";
+  if (kind === "recipient") expandRecipient(id); else expandFunder(id);
+});
+</script>
+</body>
+</html>
