@@ -357,7 +357,7 @@ function selectNode(d) {
     html += field("Location", [d.city, d.state].filter(Boolean).join(", "));
   }
 
-  html += `<button class="expand" onclick="${d.kind === 'recipient' ? 'expandRecipient' : 'expandFunder'}('${d.id}')">
+  html += `<button class="expand" data-kind="${d.kind}" data-id="${d.id}">
     Expand ${d.kind === 'recipient' ? 'its funders' : 'its recipient ecosystem'}
   </button>`;
 
@@ -425,6 +425,31 @@ function selectResult(row) {
   resultsBox.innerHTML = "";
   searchInput.value = "";
   searchInput.blur();
+  if (kind === "recipient") expandRecipient(id); else expandFunder(id);
+}
+
+// Same mobile tap fix applied to the evidence panel's "Expand" button: it's
+// rebuilt via innerHTML on every node selection, so it needs the same
+// touchstart/mousedown handling as the search results (a plain onclick
+// attribute can lose the tap the same way a click listener can).
+const evidenceBody = document.getElementById("evidence-body");
+evidenceBody.addEventListener("mousedown", (ev) => {
+  if (ev.target.closest(".expand")) ev.preventDefault();
+});
+evidenceBody.addEventListener("touchstart", (ev) => {
+  const btn = ev.target.closest(".expand");
+  if (!btn) return;
+  ev.preventDefault();
+  triggerExpand(btn);
+}, { passive: false });
+evidenceBody.addEventListener("click", (ev) => {
+  const btn = ev.target.closest(".expand");
+  if (!btn) return;
+  triggerExpand(btn);
+});
+
+function triggerExpand(btn) {
+  const { id, kind } = btn.dataset;
   if (kind === "recipient") expandRecipient(id); else expandFunder(id);
 }
 </script>
